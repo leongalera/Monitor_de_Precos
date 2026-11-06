@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.config import ALERT_COOLDOWN_HOURS, CHECK_INTERVAL_HOURS
 from app.db import Product, SessionLocal, utcnow
@@ -46,6 +46,18 @@ def check_product(session, product: Product) -> None:
     session.commit()
 
 
+def check_product_by_id(product_id: int) -> None:
+    with SessionLocal() as session:
+        product = session.get(Product, product_id)
+        if product is None or not product.active:
+            return
+        try:
+            check_product(session, product)
+        except Exception:
+            logger.exception("Erro ao verificar '%s'", product.name)
+            session.rollback()
+
+
 def check_all_products() -> None:
     session = SessionLocal()
     try:
@@ -61,8 +73,8 @@ def check_all_products() -> None:
         session.close()
 
 
-def build_scheduler() -> BlockingScheduler:
-    scheduler = BlockingScheduler()
+def build_scheduler() -> BackgroundScheduler:
+    scheduler = BackgroundScheduler()
     scheduler.add_job(
         check_all_products,
         "interval",
