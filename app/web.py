@@ -245,13 +245,14 @@ def add_offers(
     titles: list[str] = Form(default=[]),
     links: list[str] = Form(default=[]),
     stores: list[str] = Form(default=[]),
+    selectors: list[str] = Form(default=[]),
 ):
     target = clean_price_string(target_price)
     if target is None or target <= 0:
         return redirect("Preço alvo inválido.", "err")
     if not sel:
         return redirect("Selecione ao menos uma oferta.", "err")
-    if not (len(titles) == len(links) == len(stores)):
+    if not (len(titles) == len(links) == len(stores) == len(selectors)):
         return redirect("Dados da busca inconsistentes; tente novamente.", "err")
 
     added, skipped, new_ids = 0, 0, []
@@ -265,10 +266,12 @@ def add_offers(
                 skipped += 1
                 continue
 
+            selector = selectors[index].strip()
             product = Product(
                 name=f"{titles[index].strip()} ({stores[index].strip()})"[:200],
                 url=link,
                 target_price=target,
+                price_selector=selector if selector and is_valid_selector(selector) else None,
             )
             session.add(product)
             session.flush()

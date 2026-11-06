@@ -8,7 +8,7 @@ import anthropic
 from bs4 import BeautifulSoup
 
 from app.config import AI_MODEL, ANTHROPIC_API_KEY
-from app.scraper import clean_price_string, price_from_selector
+from app.scraper import clean_price_string, element_price_text, price_from_selector
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def _text_of(element) -> str:
     return " ".join(element.get_text().split())
 
 
-def _price_candidates(html: str) -> list[dict]:
+def price_candidates(html: str) -> list[dict]:
     """Elementos mais internos cujo texto tem exatamente um valor em R$ (mesmo que dividido em tags)."""
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style", "svg", "noscript", "template"]):
@@ -107,12 +107,14 @@ def _price_candidates(html: str) -> list[dict]:
         if any(PRICE_MATCH.search(_text_of(child)) for child in element.find_all(True)):
             continue
 
-        price = clean_price_string(PRICE_MATCH.search(text).group(0))
+        text = element_price_text(element)
+        shown = PRICE_MATCH.search(text)
+        price = clean_price_string(shown.group(0)) if shown else None
         selector = _css_selector_for(soup, element)
         if price is None or not selector:
             continue
 
-        parent_text = _text_of(element.parent)[:120] if element.parent else ""
+        parent_text = " ".join(element.parent.get_text(" ").split())[:120] if element.parent else ""
         candidates.append(
             {"selector": selector, "tag": element.name, "text": text, "context": parent_text, "price": price}
         )
@@ -121,12 +123,12 @@ def _price_candidates(html: str) -> list[dict]:
     return candidates
 
 
-def suggest_selector(html: str) -> Optional[str]:
+def suggest_selector(html: str, url: str = "") -> Optional[str]:
     """Pede à IA para escolher, entre os elementos com preço, o do produto principal."""
     if not ai_enabled():
         return None
 
-    candidates = _price_candidates(html)
+    candidates = price_candidates(html)
     if not candidates:
         return None
 
@@ -134,10 +136,14 @@ def suggest_selector(html: str) -> Optional[str]:
         {"index": i, "tag": c["tag"], "text": c["text"], "context": c["context"]}
         for i, c in enumerate(candidates)
     ]
+    title = BeautifulSoup(html, "lxml").title
+    page = {"url": url[:200], "titulo": title.get_text(strip=True)[:150] if title else ""}
     prompt = (
         "Qual elemento contém o preço atual à vista do produto principal da página? "
         "Ignore preço antigo riscado, parcelas, frete, produtos relacionados ou recomendados. "
-        "Se nenhum servir, responda null.\n\n" + json.dumps(listing, ensure_ascii=False)
+        "Se a página for uma listagem ou resultado de busca com vários produtos, ou não for a página de um "
+        "produto, ou se nenhum elemento servir, responda null.\n\n"
+        f"Página: {json.dumps(page, ensure_ascii=False)}\n\n" + json.dumps(listing, ensure_ascii=False)
     )
 
     data = _ask(SELECTOR_SYSTEM, prompt)

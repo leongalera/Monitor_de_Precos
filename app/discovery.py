@@ -9,9 +9,9 @@ from urllib.parse import urlsplit
 import requests
 from bs4 import BeautifulSoup
 
-from app.ai import ai_enabled, suggest_selector
+from app.ai import ai_enabled, price_candidates, suggest_selector
 from app.config import SERPER_API_KEY
-from app.scraper import extract_page_name, extract_price_with_source, fetch_html, fetch_page
+from app.scraper import extract_page_name, extract_price_with_source, fetch_html, fetch_page, json_ld_summary
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,12 @@ SEARCH_RESULTS = 20
 MAX_PAGES_TO_READ = 15
 READ_WORKERS = 8
 READ_DEADLINE_SECONDS = 30
+MAX_EVIDENCE_CANDIDATES = 6
+# Redes sociais, vídeo e reclamações: aparecem nos resultados mas não vendem produto.
+NON_STORE_DOMAINS = (
+    "facebook.com", "instagram.com", "youtube.com", "tiktok.com", "pinterest.com", "x.com", "twitter.com",
+    "reddit.com", "linkedin.com", "reclameaqui.com.br", "wikipedia.org",
+)
 
 
 class InspectError(Exception):
@@ -37,6 +43,7 @@ class ProductInfo:
     price: Optional[float]
     selector: Optional[str]
     source: Optional[str]  # "json-ld" | "css" | "ia"
+    evidence: list[str] = field(default_factory=list)  # preenchido quando o preço não foi lido
 
 
 @dataclass
@@ -45,6 +52,7 @@ class Offer:
     store: str
     link: str
     price: float
+    selector: Optional[str] = None  # preenchido quando o preço veio de um seletor sugerido pela IA
 
 
 @dataclass
@@ -71,12 +79,33 @@ def inspect_url(url: str) -> ProductInfo:
 
     # O seletor genérico ("css") é pouco confiável (pode pegar produto relacionado): a IA tem a palavra final.
     if (price is None or source == "css") and ai_enabled():
-        selector = suggest_selector(html)
+        selector = suggest_selector(html, url)
         if selector:
             price, _ = extract_price_with_source(html, selector)
             source = "ia"
 
-    return ProductInfo(url=url, name=name, price=price, selector=selector, source=source)
+    evidence = [] if price is not None else _evidence(html)
+    return ProductInfo(url=url, name=name, price=price, selector=selector, source=source, evidence=evidence)
+
+
+def _evidence(html: str) -> list[str]:
+    """O que existe na página que poderia ser o preço, para diagnosticar sem precisar do HTML."""
+    soup = BeautifulSoup(html, "lxml")
+    lines = [
+        f"Dados estruturados: {json_ld_summary(html)}",
+        f"Tags de preço (itemprop/meta): {len(soup.select('[itemprop=price], meta[property*=price]'))}",
+    ]
+    candidates = price_candidates(html)[:MAX_EVIDENCE_CANDIDATES]
+    if candidates:
+        lines.append("Elementos com valor em R$:")
+        lines += [f"  {c['selector']} → {c['text']}" for c in candidates]
+    else:
+        lines.append("Nenhum elemento com valor em R$ no HTML recebido (o preço pode ser carregado por JavaScript).")
+    return lines
+
+
+def _is_non_store(host: str) -> bool:
+    return any(host == domain or host.endswith("." + domain) for domain in NON_STORE_DOMAINS)
 
 
 def _store_name(link: str) -> str:
@@ -104,7 +133,7 @@ def _describe_unreadable_page(html: str) -> str:
 
 
 def _read_offer(title: str, link: str) -> tuple[Optional[Offer], Optional[str]]:
-    """Só aceita páginas com preço em dados estruturados (JSON-LD): é o que dá para monitorar sem IA."""
+    """Aceita preço de JSON-LD ou de um seletor que a IA escolheu e que foi conferido na página."""
     html, error = fetch_page(link)
     if html is None:
         if error and error.startswith("HTTP"):
@@ -112,11 +141,21 @@ def _read_offer(title: str, link: str) -> tuple[Optional[Offer], Optional[str]]:
         return None, error or "falha ao acessar"
 
     price, source = extract_price_with_source(html)
+    selector = None
+
+    if source != "json-ld" and ai_enabled():
+        selector = suggest_selector(html, link)
+        if selector:
+            price, _ = extract_price_with_source(html, selector)
+            source = "ia"
+
     if price is None:
         return None, _describe_unreadable_page(html)
-    if source != "json-ld":
+    if source not in ("json-ld", "ia"):
         return None, "preço só em seletor genérico (cadastre pelo link para a IA tentar)"
-    return Offer(title=extract_page_name(html) or title, store=_store_name(link), link=link, price=price), None
+
+    offer = Offer(title=extract_page_name(html) or title, store=_store_name(link), link=link, price=price, selector=selector)
+    return offer, None
 
 
 def _log_outcome(query: str, organic_hosts: list[str], outcome: SearchOutcome) -> None:
@@ -155,7 +194,7 @@ def search_offers(query: str) -> SearchOutcome:
     for item in data.get("organic") or []:
         title, link = item.get("title"), item.get("link")
         host = urlsplit(link).hostname or "" if isinstance(link, str) else ""
-        if not title or not link or link in seen or not link.startswith(("http://", "https://")) or "google." in host:
+        if not title or not link or link in seen or not link.startswith(("http://", "https://")) or "google." in host or _is_non_store(host):
             continue
         seen.add(link)
         candidates.append((title, link))
