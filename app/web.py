@@ -110,6 +110,7 @@ def _product_view(product: Product) -> dict:
         "below_target": last is not None and last <= target,
         "checked_at": product.last_checked_at,
         "error": product.last_error,
+        "render_js": product.render_js,
     }
 
 
@@ -258,6 +259,7 @@ def create_product(
     target_price: str = Form(""),
     selector: str = Form(""),
     group_id: str = Form(""),
+    render_js: str = Form(""),
 ):
     name, url, selector = name.strip()[:200], url.strip(), selector.strip()
 
@@ -278,7 +280,14 @@ def create_product(
         if target is None or target <= 0:
             return redirect("Preço alvo inválido.", "err")
 
-        product = Product(name=name, url=url, target_price=target, price_selector=selector or None, group=group)
+        product = Product(
+            name=name,
+            url=url,
+            target_price=target,
+            price_selector=selector or None,
+            render_js=render_js == "1",
+            group=group,
+        )
         session.add(product)
         session.commit()
         product_id, anchor = product.id, (f"group-{group.id}" if group else "")

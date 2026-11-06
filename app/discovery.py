@@ -19,6 +19,7 @@ from app.scraper import (
     fetch_page,
     friendly_fetch_error,
     json_ld_summary,
+    render_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class ProductInfo:
     selector: Optional[str]
     source: Optional[str]  # "json-ld" | "css" | "ia"
     evidence: list[str] = field(default_factory=list)  # preenchido quando o preço não foi lido
+    render_js: bool = False  # o preço só aparece depois que o JavaScript roda (leitura com navegador)
 
 
 @dataclass
@@ -75,13 +77,8 @@ class SearchOutcome:
     skipped: list[SkippedPage] = field(default_factory=list)
 
 
-def inspect_url(url: str) -> ProductInfo:
-    """Lê a página e descobre nome, preço e (se preciso) um seletor CSS para o preço."""
-    html = fetch_html(url)
-    if html is None:
-        raise InspectError("Não foi possível acessar a página (URL inválida, bloqueio da loja ou site fora do ar).")
-
-    name = extract_page_name(html)
+def _find_price(html: str, url: str) -> tuple[Optional[float], Optional[str], Optional[str]]:
+    """(preço, origem, seletor): dados estruturados, seletores genéricos e, por último, a IA."""
     price, source = extract_price_with_source(html)
     selector = None
 
@@ -91,15 +88,54 @@ def inspect_url(url: str) -> ProductInfo:
         if selector:
             price, _ = extract_price_with_source(html, selector)
             source = "ia"
-
-    evidence = [] if price is not None else _evidence(html)
-    return ProductInfo(url=url, name=name, price=price, selector=selector, source=source, evidence=evidence)
+    return price, source, selector
 
 
-def _evidence(html: str) -> list[str]:
+def inspect_url(url: str) -> ProductInfo:
+    """Lê a página e descobre nome, preço e (se preciso) um seletor CSS para o preço.
+
+    Se o HTML simples não traz o preço, tenta de novo com a página renderizada por um navegador
+    (lojas que montam o preço com JavaScript); nesse caso o produto passa a ser lido assim sempre.
+    """
+    html, error = fetch_page(url)
+    if html is None:
+        raise InspectError(
+            f"Não foi possível acessar a página ({friendly_fetch_error(error)}). "
+            "Pode ser URL inválida, bloqueio da loja ou site fora do ar."
+        )
+
+    price, source, selector = _find_price(html, url)
+    render_js, render_note = False, None
+
+    if price is None:
+        rendered, render_error = render_page(url)
+        if rendered is None:
+            render_note = f"Leitura com navegador não disponível: {friendly_fetch_error(render_error)}."
+        else:
+            r_price, r_source, r_selector = _find_price(rendered, url)
+            if r_price is not None:
+                html, price, source, selector, render_js = rendered, r_price, r_source, r_selector, True
+            else:
+                html = rendered
+                render_note = "Página também testada com navegador (JavaScript executado): preço não encontrado."
+
+    evidence = [] if price is not None else _evidence(html, render_note)
+    return ProductInfo(
+        url=url,
+        name=extract_page_name(html),
+        price=price,
+        selector=selector,
+        source=source,
+        evidence=evidence,
+        render_js=render_js,
+    )
+
+
+def _evidence(html: str, render_note: Optional[str] = None) -> list[str]:
     """O que existe na página que poderia ser o preço, para diagnosticar sem precisar do HTML."""
     soup = BeautifulSoup(html, "lxml")
-    lines = [
+    lines = [render_note] if render_note else []
+    lines += [
         f"Dados estruturados: {json_ld_summary(html)}",
         f"Tags de preço (itemprop/meta): {len(soup.select('[itemprop=price], meta[property*=price]'))}",
     ]
@@ -108,7 +144,7 @@ def _evidence(html: str) -> list[str]:
         lines.append("Elementos com valor em R$:")
         lines += [f"  {c['selector']} → {c['text']}" for c in candidates]
     else:
-        lines.append("Nenhum elemento com valor em R$ no HTML recebido (o preço pode ser carregado por JavaScript).")
+        lines.append("Nenhum elemento com valor em R$ no HTML recebido.")
     return lines
 
 
