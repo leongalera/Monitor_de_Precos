@@ -18,6 +18,7 @@
             <input type="hidden" name="titles" value="{{ o.title }}">
             <input type="hidden" name="links" value="{{ o.link }}">
             <input type="hidden" name="stores" value="{{ o.store }}">
+            <input type="hidden" name="selectors" value="{{ o.selector or '' }}">
           </td>
           <td>
             {% if o.link.startswith(('http://', 'https://')) %}

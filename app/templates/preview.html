@@ -19,6 +19,12 @@
     Não consegui ler o preço automaticamente. Você pode cadastrar mesmo assim informando o seletor CSS do preço
     abaixo; sem ele, o produto ficará "sem leitura".
   </div>
+  {% if info.evidence %}
+  <details>
+    <summary>O que encontramos na página</summary>
+    <pre style="white-space:pre-wrap;word-break:break-word;font-size:.82rem" class="muted">{{ info.evidence|join("\n") }}</pre>
+  </details>
+  {% endif %}
   {% endif %}
 
   <form method="post" action="/products">

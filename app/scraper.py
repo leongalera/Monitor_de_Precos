@@ -34,6 +34,9 @@ FALLBACK_SELECTORS = [
 ]
 
 PRICE_NUMBER_PATTERN = re.compile(r"\d[\d.,]*")
+ARIA_PRICE_PATTERN = re.compile(r"(\d[\d.]*)\s+reais?(?:\s+com\s+(\d{1,2})\s+centavos?)?", re.IGNORECASE)
+SPACE_BEFORE_SEPARATOR = re.compile(r"\s+([,.])(?=\d)")
+SPLIT_CENTS = re.compile(r"^(R\$\s*\d{1,3}(?:\.\d{3})*)\s+(\d{2})$")
 MAX_REDIRECTS = 5
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
@@ -273,6 +276,31 @@ def _price_from_json_ld(soup: BeautifulSoup) -> Optional[float]:
     return None
 
 
+def json_ld_summary(html: str) -> str:
+    """Resumo dos dados estruturados da página, para diagnóstico."""
+    soup = BeautifulSoup(html, "lxml")
+    blocks = soup.find_all("script", type="application/ld+json")
+    if not blocks:
+        return "nenhum bloco JSON-LD"
+
+    types, invalid = [], 0
+    for script in blocks:
+        try:
+            data = json.loads(script.string or script.get_text() or "")
+        except ValueError:
+            invalid += 1
+            continue
+        for node in _json_ld_nodes(data):
+            node_type = node.get("@type")
+            types.extend(node_type if isinstance(node_type, list) else [node_type])
+
+    has_price = _price_from_json_ld(soup) is not None
+    summary = f"{len(blocks)} bloco(s), tipos: {', '.join(str(t) for t in dict.fromkeys(types) if t) or '-'}"
+    if invalid:
+        summary += f", {invalid} inválido(s)"
+    return summary + f"; preço em Product: {'sim' if has_price else 'não'}"
+
+
 def extract_page_name(html: str) -> Optional[str]:
     soup = BeautifulSoup(html, "lxml")
 
@@ -290,6 +318,22 @@ def extract_page_name(html: str) -> Optional[str]:
     return None
 
 
+def element_price_text(element) -> str:
+    """Texto do preço de um elemento, tratando preços partidos em vários spans.
+
+    Ex.: <span>R$</span><span>9.912</span><span>80</span> -> "R$ 9.912,80" (sem isso viraria "R$9.91280").
+    Usa o aria-label "9912 reais com 80 centavos" quando existir.
+    """
+    for node in [element, *element.find_all(attrs={"aria-label": True})]:
+        match = ARIA_PRICE_PATTERN.search(node.get("aria-label", ""))
+        if match:
+            return f"R$ {match.group(1).replace('.', '')},{(match.group(2) or '0').zfill(2)}"
+
+    text = element.get_text(" ", strip=True)
+    text = SPACE_BEFORE_SEPARATOR.sub(r"\1", text)
+    return SPLIT_CENTS.sub(r"\1,\2", text)
+
+
 def price_from_selector(soup: BeautifulSoup, css_selector: str) -> Optional[float]:
     try:
         element = soup.select_one(css_selector)
@@ -298,7 +342,7 @@ def price_from_selector(soup: BeautifulSoup, css_selector: str) -> Optional[floa
         return None
     if element is None:
         return None
-    return clean_price_string(element.get("content") or element.get_text(strip=True))
+    return clean_price_string(element.get("content") or element_price_text(element))
 
 
 def extract_price_with_source(html: str, selector: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
