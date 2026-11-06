@@ -210,10 +210,11 @@ def search(request: Request, q: str = Form(...), ai_filter: bool = Form(False)):
         return redirect("Digite o que deseja buscar.", "err")
 
     try:
-        offers = search_offers(q)
+        outcome = search_offers(q)
     except SearchError as exc:
         return redirect(str(exc), "err")
 
+    offers = outcome.offers
     note = ""
     if ai_filter and ai_enabled() and offers:
         kept = filter_matching_offers(q, [offer.title for offer in offers])
@@ -229,6 +230,7 @@ def search(request: Request, q: str = Form(...), ai_filter: bool = Form(False)):
         {
             "q": q,
             "offers": offers,
+            "skipped": outcome.skipped,
             "note": note,
             "suggested": _suggested_target(min(prices)) if prices else "",
         },
