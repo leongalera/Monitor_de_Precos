@@ -4,6 +4,7 @@ import logging
 import random
 import re
 import socket
+import threading
 from typing import Any, Iterator, Optional
 from urllib.parse import urljoin, urlsplit
 
@@ -142,34 +143,77 @@ def fetch_html(url: str) -> Optional[str]:
     return fetch_page(url)[0]
 
 
-def fetch_html_with_playwright(url: str) -> Optional[str]:
-    """Ponto de extensão para páginas que dependem de renderização JS.
+BROWSER_ARGS = ["--disable-dev-shm-usage"]
+BROWSER_BLOCKED_RESOURCES = {"image", "media", "font"}
+BROWSER_NAVIGATION_TIMEOUT_MS = 30000
+BROWSER_IDLE_TIMEOUT_MS = 10000
+BROWSER_SETTLE_MS = 1500
+# O Chromium consome centenas de MB: no máximo 2 renderizações ao mesmo tempo.
+_browser_slots = threading.BoundedSemaphore(2)
 
-    Ativado por produto (render_js=True). Requer, fora do requirements.txt base:
-    `pip install playwright && playwright install --with-deps chromium`.
+
+def browser_available() -> bool:
+    try:
+        import playwright.sync_api  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _route_request(route) -> None:
+    request = route.request
+    if request.resource_type in BROWSER_BLOCKED_RESOURCES:
+        route.abort()
+    elif request.url.startswith(("data:", "blob:")) or is_safe_url(request.url):
+        route.continue_()
+    else:
+        route.abort()
+
+
+def render_page(url: str) -> tuple[Optional[str], Optional[str]]:
+    """Abre a página num Chromium e devolve o HTML já montado pelo JavaScript: (html, None) ou (None, motivo).
+
+    Requer Playwright + Chromium instalados (ver Dockerfile). Toda requisição do navegador passa pela
+    checagem anti-SSRF, inclusive redirecionamentos e chamadas da própria página.
     """
     if not is_safe_url(url):
-        logger.error("URL bloqueada ou inválida: %s", url)
-        return None
+        return None, "URL não permitida"
+    if not browser_available():
+        return None, "navegador (Playwright) não instalado neste servidor"
 
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        logger.error("Playwright não instalado; não é possível renderizar %s", url)
-        return None
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    from playwright.sync_api import sync_playwright
 
-    try:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            try:
-                page = browser.new_page(user_agent=random.choice(USER_AGENTS))
-                page.goto(url, timeout=int(REQUEST_TIMEOUT_SECONDS * 1000), wait_until="networkidle")
-                return page.content()
-            finally:
-                browser.close()
-    except Exception as exc:
-        logger.error("Falha ao buscar %s via Playwright: %s", url, exc)
-        return None
+    with _browser_slots:
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True, args=BROWSER_ARGS)
+                try:
+                    context = browser.new_context(
+                        user_agent=random.choice(USER_AGENTS), locale="pt-BR", viewport={"width": 1366, "height": 900}
+                    )
+                    page = context.new_page()
+                    page.route("**/*", _route_request)
+
+                    response = page.goto(url, timeout=BROWSER_NAVIGATION_TIMEOUT_MS, wait_until="domcontentloaded")
+                    if response is not None and response.status >= 400:
+                        logger.error("Navegador recebeu HTTP %s em %s", response.status, url)
+                        return None, f"HTTP {response.status}"
+
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=BROWSER_IDLE_TIMEOUT_MS)
+                    except PlaywrightTimeout:
+                        pass  # sites com polling nunca ficam ociosos: usa o que já carregou
+                    page.wait_for_timeout(BROWSER_SETTLE_MS)
+                    return page.content(), None
+                finally:
+                    browser.close()
+        except PlaywrightTimeout:
+            logger.error("Tempo esgotado renderizando %s", url)
+            return None, "tempo esgotado"
+        except Exception as exc:
+            logger.error("Falha ao renderizar %s: %s", url, exc)
+            return None, f"falha ao renderizar ({type(exc).__name__})"
 
 
 def clean_price_string(raw_price: str) -> Optional[float]:
@@ -407,10 +451,7 @@ def read_product_price(
     url: str, selector: Optional[str] = None, render_js: bool = False
 ) -> tuple[Optional[float], Optional[str]]:
     """Devolve (preço, None) ou (None, motivo da falha)."""
-    if render_js:
-        html, error = fetch_html_with_playwright(url), "falha ao renderizar com Playwright"
-    else:
-        html, error = fetch_page(url)
+    html, error = render_page(url) if render_js else fetch_page(url)
 
     if html is None:
         return None, friendly_fetch_error(error)

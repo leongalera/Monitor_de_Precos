@@ -14,6 +14,9 @@
       {% else %}seletor genérico{% endif %}
     </span>
   </p>
+  {% if info.render_js %}
+  <p class="muted">Esta loja monta o preço com JavaScript; o produto será lido com um navegador a cada verificação (mais lento).</p>
+  {% endif %}
   {% else %}
   <div class="warn">
     Não consegui ler o preço automaticamente. Você pode cadastrar mesmo assim informando o seletor CSS do preço
@@ -29,6 +32,7 @@
 
   <form method="post" action="/products">
     <input type="hidden" name="url" value="{{ info.url }}">
+    {% if info.render_js %}<input type="hidden" name="render_js" value="1">{% endif %}
     {% if group %}<input type="hidden" name="group_id" value="{{ group.id }}">{% endif %}
 
     <label for="name">Nome</label>

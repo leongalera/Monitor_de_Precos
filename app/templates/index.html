@@ -107,7 +107,7 @@
           {% if p.url.startswith(('http://', 'https://')) %}
           <a href="{{ p.url }}" target="_blank" rel="noopener noreferrer">{{ p.host }}</a>
           {% else %}{{ p.host }}{% endif %}
-          <div class="muted">{{ p.name }}{% if not p.active %} · <span class="badge">pausado</span>{% endif %}</div>
+          <div class="muted">{{ p.name }}{% if p.render_js %} · <span class="badge">navegador</span>{% endif %}{% if not p.active %} · <span class="badge">pausado</span>{% endif %}</div>
         </td>
         <td class="num">{{ status_cell(p) }}</td>
         <td class="muted hide-narrow">{{ p.checked_at|localtime }}</td>

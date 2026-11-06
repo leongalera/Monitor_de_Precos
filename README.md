@@ -9,7 +9,7 @@ main.py              # sobe a interface web (uvicorn) e, junto, o agendador
 manage.py            # CLI alternativa para cadastrar/listar/ativar/remover produtos
 app/config.py        # variáveis de ambiente
 app/db.py            # SQLAlchemy (SQLite local / PostgreSQL via DATABASE_URL)
-app/scraper.py       # requests + BeautifulSoup, JSON-LD, User-Agent rotativo, proteção SSRF, gancho p/ Playwright
+app/scraper.py       # requests + BeautifulSoup, JSON-LD, User-Agent rotativo, proteção SSRF, leitura com navegador (Playwright)
 app/discovery.py     # analisa uma URL (nome/preço) e busca ofertas em várias lojas (Serper), com diagnóstico dos descartes
 app/ai.py            # IA (Haiku): sugere seletor CSS e filtra ofertas do mesmo modelo
 app/notifier.py      # Telegram (POST direto na Bot API)
@@ -77,6 +77,8 @@ python manage.py list
 - POSTs de outros sites são bloqueados (CSRF).
 - O servidor só busca URLs `http(s)` que resolvem para IPs públicos, inclusive a cada redirecionamento (evita SSRF).
 
-## Playwright (futuro)
+## Páginas que carregam o preço por JavaScript
 
-Para páginas com renderização JS: `pip install playwright && playwright install --with-deps chromium`, e cadastre o produto com `--render-js` na CLI. O gancho já existe em `app/scraper.py` (`fetch_html_with_playwright`).
+Algumas lojas entregam a página "vazia" e montam o preço depois, com JavaScript. Quando o HTML simples não traz o preço, o cadastro por URL tenta de novo abrindo a página num Chromium (Playwright); se achar, o produto é marcado com o selo **navegador** e passa a ser lido assim em cada verificação (mais lento e com mais memória que a leitura simples). Toda requisição do navegador passa pela mesma proteção contra SSRF e imagens/fontes são bloqueadas.
+
+O Chromium vem do `Dockerfile` (imagem oficial do Playwright), que o Railway usa automaticamente. A versão da imagem e a de `playwright==` em `requirements.txt` precisam ser a mesma. Localmente, sem Chromium, a leitura com navegador é pulada e o motivo aparece na tela; para ativar: `playwright install --with-deps chromium`.
