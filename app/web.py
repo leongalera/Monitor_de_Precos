@@ -222,7 +222,7 @@ def search(request: Request, q: str = Form(...), ai_filter: bool = Form(False)):
         else:
             offers = [offers[i] for i in kept]
 
-    prices = [offer.price for offer in offers if offer.price]
+    prices = [offer.price for offer in offers]
     return templates.TemplateResponse(
         request,
         "search.html",
