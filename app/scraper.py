@@ -378,8 +378,44 @@ def is_valid_selector(selector: str) -> bool:
     return True
 
 
-def get_product_price(url: str, selector: Optional[str] = None, render_js: bool = False) -> Optional[float]:
-    html = fetch_html_with_playwright(url) if render_js else fetch_html(url)
+CHALLENGE_MARKERS = (
+    "robot check", "captcha", "just a moment", "access denied", "are you a human", "enable javascript",
+    "digite os caracteres", "verificação de segurança", "acesse sua conta", "para continuar, acesse",
+)
+
+
+def friendly_fetch_error(error: Optional[str]) -> str:
+    if error and error.startswith("HTTP"):
+        return f"acesso recusado pela loja ({error})"
+    return error or "falha ao acessar"
+
+
+def describe_unreadable_page(html: str) -> str:
+    """Explica por que uma página que respondeu 200 não trouxe preço (ex.: captcha/login em vez do produto)."""
+    soup = BeautifulSoup(html, "lxml")
+    title = soup.title.get_text(strip=True)[:60] if soup.title else ""
+    sample = f"{title} {soup.get_text(' ', strip=True)[:1500]}".lower()
+
+    if any(marker in sample for marker in CHALLENGE_MARKERS):
+        return f"página de verificação anti-bot (título: '{title}')" if title else "página de verificação anti-bot"
+    if title:
+        return f"página lida, mas sem preço identificável (título: '{title}')"
+    return "página lida, mas sem preço identificável"
+
+
+def read_product_price(
+    url: str, selector: Optional[str] = None, render_js: bool = False
+) -> tuple[Optional[float], Optional[str]]:
+    """Devolve (preço, None) ou (None, motivo da falha)."""
+    if render_js:
+        html, error = fetch_html_with_playwright(url), "falha ao renderizar com Playwright"
+    else:
+        html, error = fetch_page(url)
+
     if html is None:
-        return None
-    return extract_price(html, selector)
+        return None, friendly_fetch_error(error)
+
+    price = extract_price(html, selector)
+    if price is None:
+        return None, describe_unreadable_page(html)
+    return price, None

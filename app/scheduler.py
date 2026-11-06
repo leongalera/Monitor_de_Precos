@@ -1,12 +1,13 @@
 import logging
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.config import ALERT_COOLDOWN_HOURS, CHECK_INTERVAL_HOURS
 from app.db import Product, SessionLocal, utcnow
 from app.notifier import build_price_drop_message, send_telegram_message
-from app.scraper import format_price_brl, get_product_price
+from app.scraper import format_price_brl, read_product_price
 
 logger = logging.getLogger(__name__)
 
@@ -17,16 +18,26 @@ def _cooldown_elapsed(product: Product) -> bool:
     return utcnow() - product.last_alert_sent_at >= timedelta(hours=ALERT_COOLDOWN_HOURS)
 
 
+def _display_name(product: Product) -> str:
+    if product.group is None:
+        return product.name
+    host = urlsplit(product.url).hostname or ""
+    return f"{product.group.name} ({host[4:] if host.startswith('www.') else host})"
+
+
 def check_product(session, product: Product) -> None:
     logger.info("Verificando '%s' (%s)", product.name, product.url)
 
-    price = get_product_price(product.url, product.price_selector, product.render_js)
+    price, error = read_product_price(product.url, product.price_selector, product.render_js)
+    product.last_checked_at = utcnow()
+    product.last_error = None if price is not None else (error or "falha ao ler o preço")[:200]
+
     if price is None:
-        logger.warning("Não foi possível extrair o preço de '%s'", product.name)
+        logger.warning("Não foi possível extrair o preço de '%s': %s", product.name, product.last_error)
+        session.commit()
         return
 
     product.last_price = price
-    product.last_checked_at = utcnow()
 
     if price > product.target_price:
         logger.info(
@@ -38,7 +49,7 @@ def check_product(session, product: Product) -> None:
     elif not _cooldown_elapsed(product):
         logger.info("'%s' abaixo do alvo, mas alerta em cooldown.", product.name)
     else:
-        message = build_price_drop_message(product.name, price, product.target_price, product.url)
+        message = build_price_drop_message(_display_name(product), price, product.target_price, product.url)
         if send_telegram_message(message):
             product.last_alert_sent_at = utcnow()
             logger.info("Alerta enviado para '%s'", product.name)

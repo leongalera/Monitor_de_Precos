@@ -11,7 +11,15 @@ from bs4 import BeautifulSoup
 
 from app.ai import ai_enabled, price_candidates, suggest_selector
 from app.config import SERPER_API_KEY
-from app.scraper import extract_page_name, extract_price_with_source, fetch_html, fetch_page, json_ld_summary
+from app.scraper import (
+    describe_unreadable_page,
+    extract_page_name,
+    extract_price_with_source,
+    fetch_html,
+    fetch_page,
+    friendly_fetch_error,
+    json_ld_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,32 +121,11 @@ def _store_name(link: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-CHALLENGE_MARKERS = (
-    "robot check", "captcha", "just a moment", "access denied", "are you a human", "enable javascript",
-    "digite os caracteres", "verificação de segurança", "acesse sua conta", "para continuar, acesse",
-)
-
-
-def _describe_unreadable_page(html: str) -> str:
-    """Explica por que uma página que respondeu 200 não trouxe preço (ex.: captcha/login em vez do produto)."""
-    soup = BeautifulSoup(html, "lxml")
-    title = soup.title.get_text(strip=True)[:60] if soup.title else ""
-    sample = f"{title} {soup.get_text(' ', strip=True)[:1500]}".lower()
-
-    if any(marker in sample for marker in CHALLENGE_MARKERS):
-        return f"página de verificação anti-bot (título: '{title}')" if title else "página de verificação anti-bot"
-    if title:
-        return f"página lida, mas sem preço identificável (título: '{title}')"
-    return "página lida, mas sem preço identificável"
-
-
 def _read_offer(title: str, link: str) -> tuple[Optional[Offer], Optional[str]]:
     """Aceita preço de JSON-LD ou de um seletor que a IA escolheu e que foi conferido na página."""
     html, error = fetch_page(link)
     if html is None:
-        if error and error.startswith("HTTP"):
-            return None, f"acesso recusado pela loja ({error})"
-        return None, error or "falha ao acessar"
+        return None, friendly_fetch_error(error)
 
     price, source = extract_price_with_source(html)
     selector = None
@@ -150,7 +137,7 @@ def _read_offer(title: str, link: str) -> tuple[Optional[Offer], Optional[str]]:
             source = "ia"
 
     if price is None:
-        return None, _describe_unreadable_page(html)
+        return None, describe_unreadable_page(html)
     if source not in ("json-ld", "ia"):
         return None, "preço só em seletor genérico (cadastre pelo link para a IA tentar)"
 

@@ -33,9 +33,18 @@
     </table>
     </div>
 
+    <label for="group">Grupo</label>
+    <select id="group" name="group">
+      <option value="new" selected>Criar novo grupo</option>
+      {% for g in groups %}<option value="{{ g.id }}">Adicionar ao grupo: {{ g.name }} (alvo R$ {{ g.target_input }})</option>{% endfor %}
+      <option value="none">Sem grupo</option>
+    </select>
+    <label for="group_name">Nome do novo grupo</label>
+    <input id="group_name" type="text" name="group_name" value="{{ q }}" maxlength="200" style="max-width:420px">
+
     <label for="target_price">Preço alvo para os selecionados (R$)</label>
     <input id="target_price" type="text" name="target_price" value="{{ suggested }}" inputmode="decimal" required style="max-width:220px">
-    {% if suggested %}<p class="muted">Sugestão: 5% abaixo da oferta mais barata.</p>{% endif %}
+    {% if suggested %}<p class="muted">Sugestão: 5% abaixo da oferta mais barata. Em grupo já existente vale o alvo do grupo.</p>{% endif %}
 
     <div class="row" style="margin-top:16px">
       <button type="submit">Monitorar selecionados</button>
