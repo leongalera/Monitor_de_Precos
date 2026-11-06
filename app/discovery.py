@@ -7,6 +7,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 
 from app.ai import ai_enabled, suggest_selector
 from app.config import SERPER_API_KEY
@@ -83,6 +84,25 @@ def _store_name(link: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+CHALLENGE_MARKERS = (
+    "robot check", "captcha", "just a moment", "access denied", "are you a human", "enable javascript",
+    "digite os caracteres", "verificação de segurança", "acesse sua conta", "para continuar, acesse",
+)
+
+
+def _describe_unreadable_page(html: str) -> str:
+    """Explica por que uma página que respondeu 200 não trouxe preço (ex.: captcha/login em vez do produto)."""
+    soup = BeautifulSoup(html, "lxml")
+    title = soup.title.get_text(strip=True)[:60] if soup.title else ""
+    sample = f"{title} {soup.get_text(' ', strip=True)[:1500]}".lower()
+
+    if any(marker in sample for marker in CHALLENGE_MARKERS):
+        return f"página de verificação anti-bot (título: '{title}')" if title else "página de verificação anti-bot"
+    if title:
+        return f"página lida, mas sem preço identificável (título: '{title}')"
+    return "página lida, mas sem preço identificável"
+
+
 def _read_offer(title: str, link: str) -> tuple[Optional[Offer], Optional[str]]:
     """Só aceita páginas com preço em dados estruturados (JSON-LD): é o que dá para monitorar sem IA."""
     html, error = fetch_page(link)
@@ -93,7 +113,7 @@ def _read_offer(title: str, link: str) -> tuple[Optional[Offer], Optional[str]]:
 
     price, source = extract_price_with_source(html)
     if price is None:
-        return None, "página lida, mas sem preço identificável"
+        return None, _describe_unreadable_page(html)
     if source != "json-ld":
         return None, "preço só em seletor genérico (cadastre pelo link para a IA tentar)"
     return Offer(title=extract_page_name(html) or title, store=_store_name(link), link=link, price=price), None
