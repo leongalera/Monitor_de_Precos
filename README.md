@@ -10,7 +10,7 @@ manage.py            # CLI alternativa para cadastrar/listar/ativar/remover prod
 app/config.py        # variáveis de ambiente
 app/db.py            # SQLAlchemy (SQLite local / PostgreSQL via DATABASE_URL)
 app/scraper.py       # requests + BeautifulSoup, JSON-LD, User-Agent rotativo, proteção SSRF, gancho p/ Playwright
-app/discovery.py     # analisa uma URL (nome/preço) e busca ofertas em várias lojas (Serper)
+app/discovery.py     # analisa uma URL (nome/preço) e busca ofertas em várias lojas (Serper), com diagnóstico dos descartes
 app/ai.py            # IA (Haiku): sugere seletor CSS e filtra ofertas do mesmo modelo
 app/notifier.py      # Telegram (POST direto na Bot API)
 app/scheduler.py     # job periódico, gatilho de alerta e cooldown
@@ -18,10 +18,20 @@ app/web.py           # FastAPI: rotas, autenticação e proteção CSRF
 app/templates/       # páginas HTML
 ```
 
+## Grupos
+
+Cada **grupo** é um produto e reúne os links das lojas que o vendem. O preço alvo é do grupo e vale para todos os links; o painel mostra o melhor preço entre as lojas e o motivo de cada leitura que falhou (bloqueio da loja, captcha etc.). O alerta no Telegram traz o nome do grupo e a loja. Pausar ou remover um grupo age em todos os links; produtos antigos aparecem em "Sem grupo" e podem ser movidos para um grupo.
+
+Ao subir a versão com grupos, o app adiciona sozinho as colunas novas (`group_id`, `last_error`) à tabela `products` já existente, sem perder dados.
+
 ## Como funciona o cadastro
 
 1. **Por URL:** você cola o link; o sistema lê nome e preço dos dados estruturados da página (JSON-LD `schema.org/Product`), gratuito e estável. Se a página não tiver, tenta seletores genéricos e, havendo `ANTHROPIC_API_KEY`, a IA escolhe o elemento certo do preço. O seletor fica salvo e as checagens seguintes não usam IA.
 2. **Por busca:** você digita o produto; o sistema busca páginas de lojas (via Serper), lê o preço de cada uma e lista só as que têm preço legível (JSON-LD), ou seja, as que dá para monitorar. Você marca quais acompanhar. A opção "Filtrar com IA" mantém só o mesmo modelo. Lojas com proteção anti-bot podem não aparecer; nesse caso cadastre pelo link.
+
+## Limitações conhecidas
+
+Algumas lojas (por exemplo Mercado Livre, Amazon, Casas Bahia) recusam ou desafiam com captcha as requisições vindas de servidores em nuvem. Nesses casos o link fica "sem leitura" e o motivo aparece no grupo. A solução geral exige um serviço de proxy/scraping pago.
 
 ## Rodar localmente
 

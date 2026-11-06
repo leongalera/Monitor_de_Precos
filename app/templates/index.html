@@ -1,6 +1,25 @@
 {% extends "base.html" %}
+
+{% macro status_cell(p) %}
+  {% if p.last_price is not none %}
+    <span style="white-space:nowrap">{{ p.last_price|brl }}</span>
+    {% if p.below_target and not p.error %}<div><span class="badge ok">no alvo</span></div>{% endif %}
+  {% else %}<span class="muted">sem leitura</span>{% endif %}
+  {% if p.error %}<div class="err-note">{{ p.error }}</div>{% endif %}
+{% endmacro %}
+
+{% macro move_form(p, group_options, current) %}
+  <form class="inline target-form" method="post" action="/products/{{ p.id }}/group">
+    <select name="group_id" aria-label="Mover {{ p.name }} para um grupo">
+      <option value="">Sem grupo</option>
+      {% for g in group_options %}<option value="{{ g.id }}" {{ 'selected' if g.id == current else '' }}>{{ g.name }}</option>{% endfor %}
+    </select>
+    <button class="small secondary" type="submit">Mover</button>
+  </form>
+{% endmacro %}
+
 {% block content %}
-<p class="sub">Cadastre produtos e receba no Telegram quando o preço cair até o alvo.</p>
+<p class="sub">Cada grupo é um produto; dentro dele ficam os links das lojas. Você recebe no Telegram quando alguma loja chega ao preço alvo.</p>
 
 {% if msg %}<div class="flash {{ kind }}" role="status">{{ msg }}</div>{% endif %}
 
@@ -13,7 +32,11 @@
         <input id="url" type="url" name="url" placeholder="https://loja.com.br/produto" required>
         <button type="submit">Analisar</button>
       </div>
-      <p class="muted">Lemos o nome e o preço da página para você só confirmar o preço alvo.</p>
+      <label for="url-group">Grupo</label>
+      <select id="url-group" name="group_id">
+        <option value="">Sem grupo</option>
+        {% for g in group_options %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
+      </select>
     </form>
   </section>
 
@@ -37,41 +60,64 @@
 </div>
 
 <section class="card">
-  <h2>Produtos monitorados ({{ products|length }})</h2>
-  {% if products %}
+  <h2>Novo grupo</h2>
+  <form method="post" action="/groups" class="row">
+    <input type="text" name="name" placeholder="Produto, ex.: Geladeira Electrolux IM8IS 540L" maxlength="200" required aria-label="Nome do produto">
+    <input type="text" name="target_price" placeholder="Preço alvo, ex.: 8.500,00" inputmode="decimal" required aria-label="Preço alvo" style="flex:0 1 180px">
+    <button type="submit">Criar grupo</button>
+  </form>
+</section>
+
+{% for g in groups %}
+<section class="card" id="group-{{ g.id }}">
+  <div class="group-head">
+    <div>
+      <h2 style="margin:0">{{ g.name }}</h2>
+      <div class="muted">
+        {{ g.links|length }} link(s) ·
+        {% if g.best %}melhor preço <strong>{{ g.best.last_price|brl }}</strong> em {{ g.best.host }}
+          {% if g.below_target %}<span class="badge ok">no alvo</span>{% endif %}
+        {% else %}sem leitura de preço{% endif %}
+      </div>
+    </div>
+    <div class="actions">
+      <form class="inline target-form" method="post" action="/groups/{{ g.id }}/target">
+        <input type="text" name="target_price" value="{{ g.target_input }}" inputmode="decimal" aria-label="Preço alvo do grupo {{ g.name }}">
+        <button class="small secondary" type="submit">Salvar alvo</button>
+      </form>
+      {% if g.links %}
+      <form class="inline" method="post" action="/groups/{{ g.id }}/toggle">
+        <button class="small secondary" type="submit">{{ 'Pausar todos' if g.any_active else 'Ativar todos' }}</button>
+      </form>
+      {% endif %}
+      <form class="inline" method="post" action="/groups/{{ g.id }}/delete" onsubmit="return confirm('Remover o grupo e todos os seus links?')">
+        <button class="small danger" type="submit">Remover grupo</button>
+      </form>
+    </div>
+  </div>
+
+  {% if g.links %}
   <div class="table-wrap">
   <table>
-    <thead>
-      <tr><th>Produto</th><th class="num">Atual</th><th class="num">Alvo</th><th>Checado</th><th>Ações</th></tr>
-    </thead>
+    <thead><tr><th>Loja</th><th class="num">Atual</th><th class="hide-narrow">Checado</th><th>Ações</th></tr></thead>
     <tbody>
-    {% for p in products %}
+    {% for p in g.links %}
       <tr class="{{ '' if p.active else 'inactive' }}">
         <td>
           {% if p.url.startswith(('http://', 'https://')) %}
-          <a href="{{ p.url }}" target="_blank" rel="noopener noreferrer">{{ p.name }}</a>
-          {% else %}{{ p.name }}{% endif %}
-          <div class="muted">{{ p.host }}{% if not p.active %} · <span class="badge">inativo</span>{% endif %}</div>
+          <a href="{{ p.url }}" target="_blank" rel="noopener noreferrer">{{ p.host }}</a>
+          {% else %}{{ p.host }}{% endif %}
+          <div class="muted">{{ p.name }}{% if not p.active %} · <span class="badge">pausado</span>{% endif %}</div>
         </td>
-        <td class="num">
-          {% if p.last_price is not none %}
-            {{ p.last_price|brl }}
-            {% if p.below_target %}<div><span class="badge ok">no alvo</span></div>{% endif %}
-          {% else %}<span class="muted">sem leitura</span>{% endif %}
-        </td>
-        <td class="num">
-          <form class="inline target-form" method="post" action="/products/{{ p.id }}/target">
-            <input type="text" name="target_price" value="{{ p.target_input }}" inputmode="decimal" aria-label="Preço alvo de {{ p.name }}">
-            <button class="small secondary" type="submit">Salvar</button>
-          </form>
-        </td>
-        <td class="muted">{{ p.checked_at|localtime }}</td>
+        <td class="num">{{ status_cell(p) }}</td>
+        <td class="muted hide-narrow">{{ p.checked_at|localtime }}</td>
         <td>
           <div class="actions">
             <form class="inline" method="post" action="/products/{{ p.id }}/toggle">
               <button class="small secondary" type="submit">{{ 'Pausar' if p.active else 'Ativar' }}</button>
             </form>
-            <form class="inline" method="post" action="/products/{{ p.id }}/delete" onsubmit="return confirm('Remover este produto?')">
+            <details class="move"><summary>Mover</summary>{{ move_form(p, group_options, g.id) }}</details>
+            <form class="inline" method="post" action="/products/{{ p.id }}/delete" onsubmit="return confirm('Remover este link?')">
               <button class="small danger" type="submit">Remover</button>
             </form>
           </div>
@@ -82,7 +128,62 @@
   </table>
   </div>
   {% else %}
-  <p class="empty">Nenhum produto ainda. Use um dos formulários acima.</p>
+  <p class="empty">Nenhum link neste grupo ainda.</p>
   {% endif %}
+
+  <form method="post" action="/products/inspect" class="row" style="margin-top:12px">
+    <input type="hidden" name="group_id" value="{{ g.id }}">
+    <input type="url" name="url" placeholder="Adicionar link de outra loja: https://..." required aria-label="Link para adicionar ao grupo {{ g.name }}">
+    <button class="secondary" type="submit">Analisar link</button>
+  </form>
 </section>
+{% endfor %}
+
+{% if ungrouped %}
+<section class="card">
+  <h2>Sem grupo ({{ ungrouped|length }})</h2>
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Produto</th><th class="num">Atual</th><th class="num">Alvo</th><th class="hide-narrow">Checado</th><th>Ações</th></tr>
+    </thead>
+    <tbody>
+    {% for p in ungrouped %}
+      <tr class="{{ '' if p.active else 'inactive' }}">
+        <td>
+          {% if p.url.startswith(('http://', 'https://')) %}
+          <a href="{{ p.url }}" target="_blank" rel="noopener noreferrer">{{ p.name }}</a>
+          {% else %}{{ p.name }}{% endif %}
+          <div class="muted">{{ p.host }}{% if not p.active %} · <span class="badge">inativo</span>{% endif %}</div>
+        </td>
+        <td class="num">{{ status_cell(p) }}</td>
+        <td class="num">
+          <form class="inline target-form" method="post" action="/products/{{ p.id }}/target">
+            <input type="text" name="target_price" value="{{ p.target_input }}" inputmode="decimal" aria-label="Preço alvo de {{ p.name }}">
+            <button class="small secondary" type="submit">Salvar</button>
+          </form>
+        </td>
+        <td class="muted hide-narrow">{{ p.checked_at|localtime }}</td>
+        <td>
+          <div class="actions">
+            <form class="inline" method="post" action="/products/{{ p.id }}/toggle">
+              <button class="small secondary" type="submit">{{ 'Pausar' if p.active else 'Ativar' }}</button>
+            </form>
+            {% if group_options %}{{ move_form(p, group_options, none) }}{% endif %}
+            <form class="inline" method="post" action="/products/{{ p.id }}/delete" onsubmit="return confirm('Remover este produto?')">
+              <button class="small danger" type="submit">Remover</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+
+{% if not groups and not ungrouped %}
+<section class="card"><p class="empty">Nenhum produto ainda. Crie um grupo, busque em várias lojas ou adicione um link.</p></section>
+{% endif %}
 {% endblock %}

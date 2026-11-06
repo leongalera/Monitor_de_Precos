@@ -29,6 +29,7 @@
 
   <form method="post" action="/products">
     <input type="hidden" name="url" value="{{ info.url }}">
+    {% if group %}<input type="hidden" name="group_id" value="{{ group.id }}">{% endif %}
 
     <label for="name">Nome</label>
     <input id="name" type="text" name="name" value="{{ info.name or '' }}" maxlength="200" required>
@@ -36,9 +37,14 @@
     <label>Link</label>
     <div class="muted" style="word-break:break-all">{{ info.url }}</div>
 
+    {% if group %}
+    <label>Grupo</label>
+    <div><strong>{{ group.name }}</strong> <span class="muted">· preço alvo do grupo: {{ group.target|brl }}</span></div>
+    {% else %}
     <label for="target_price">Preço alvo (R$)</label>
     <input id="target_price" type="text" name="target_price" value="{{ suggested }}" inputmode="decimal" placeholder="Ex.: 3.299,00" required>
     {% if suggested %}<p class="muted">Sugestão: 5% abaixo do preço atual.</p>{% endif %}
+    {% endif %}
 
     <label for="selector">Seletor CSS do preço (opcional)</label>
     <input id="selector" type="text" name="selector" value="{{ info.selector or '' }}" placeholder=".price">
