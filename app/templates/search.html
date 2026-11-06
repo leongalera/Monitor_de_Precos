@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<p class="sub">Resultados para <strong>{{ q }}</strong>. Marque as ofertas que deseja monitorar.</p>
+<p class="sub">Resultados para <strong>{{ q }}</strong>. Marque as ofertas que deseja monitorar. Mostramos só páginas de lojas das quais conseguimos ler o preço.</p>
 
 {% if note %}<div class="warn">{{ note }}</div>{% endif %}
 
@@ -23,10 +23,9 @@
             {% if o.link.startswith(('http://', 'https://')) %}
             <a href="{{ o.link }}" target="_blank" rel="noopener noreferrer">{{ o.title }}</a>
             {% else %}{{ o.title }}{% endif %}
-            {% if not o.direct %}<div class="muted">Link do Google Shopping: o preço pode não ser legível.</div>{% endif %}
           </td>
           <td>{{ o.store }}</td>
-          <td class="num">{% if o.price is not none %}{{ o.price|brl }}{% else %}-{% endif %}</td>
+          <td class="num">{{ o.price|brl }}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -43,7 +42,7 @@
     </div>
   </form>
   {% else %}
-  <p class="empty">Nenhuma oferta encontrada.</p>
+  <p class="empty">Nenhuma oferta com preço legível foi encontrada. Tente outro termo ou cadastre pelo link da loja.</p>
   <a class="btn secondary" href="/">Voltar</a>
   {% endif %}
 </section>

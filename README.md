@@ -21,7 +21,7 @@ app/templates/       # páginas HTML
 ## Como funciona o cadastro
 
 1. **Por URL:** você cola o link; o sistema lê nome e preço dos dados estruturados da página (JSON-LD `schema.org/Product`), gratuito e estável. Se a página não tiver, tenta seletores genéricos e, havendo `ANTHROPIC_API_KEY`, a IA escolhe o elemento certo do preço. O seletor fica salvo e as checagens seguintes não usam IA.
-2. **Por busca:** você digita o produto, o sistema lista ofertas do Google Shopping (via Serper) e você marca quais monitorar. A opção "Filtrar com IA" mantém só o mesmo modelo.
+2. **Por busca:** você digita o produto; o sistema busca páginas de lojas (via Serper), lê o preço de cada uma e lista só as que têm preço legível (JSON-LD), ou seja, as que dá para monitorar. Você marca quais acompanhar. A opção "Filtrar com IA" mantém só o mesmo modelo. Lojas com proteção anti-bot podem não aparecer; nesse caso cadastre pelo link.
 
 ## Rodar localmente
 
