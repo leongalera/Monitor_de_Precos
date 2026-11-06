@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="sub">Confirme os dados lidos da página.</p>
+
+<section class="card">
+  <h2>Novo produto</h2>
+
+  {% if info.price is not none %}
+  <p>
+    Preço atual detectado: <strong>{{ info.price|brl }}</strong>
+    <span class="badge">
+      {% if info.source == 'json-ld' %}dados estruturados da página
+      {% elif info.source == 'ia' %}seletor sugerido por IA
+      {% else %}seletor genérico{% endif %}
+    </span>
+  </p>
+  {% else %}
+  <div class="warn">
+    Não consegui ler o preço automaticamente. Você pode cadastrar mesmo assim informando o seletor CSS do preço
+    abaixo; sem ele, o produto ficará "sem leitura".
+  </div>
+  {% endif %}
+
+  <form method="post" action="/products">
+    <input type="hidden" name="url" value="{{ info.url }}">
+
+    <label for="name">Nome</label>
+    <input id="name" type="text" name="name" value="{{ info.name or '' }}" maxlength="200" required>
+
+    <label>Link</label>
+    <div class="muted" style="word-break:break-all">{{ info.url }}</div>
+
+    <label for="target_price">Preço alvo (R$)</label>
+    <input id="target_price" type="text" name="target_price" value="{{ suggested }}" inputmode="decimal" placeholder="Ex.: 3.299,00" required>
+    {% if suggested %}<p class="muted">Sugestão: 5% abaixo do preço atual.</p>{% endif %}
+
+    <label for="selector">Seletor CSS do preço (opcional)</label>
+    <input id="selector" type="text" name="selector" value="{{ info.selector or '' }}" placeholder=".price">
+
+    <div class="row" style="margin-top:16px">
+      <button type="submit">Monitorar</button>
+      <a class="btn secondary" href="/">Cancelar</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

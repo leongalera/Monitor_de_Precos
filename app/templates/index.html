@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="sub">Cadastre produtos e receba no Telegram quando o preço cair até o alvo.</p>
+
+{% if msg %}<div class="flash {{ kind }}" role="status">{{ msg }}</div>{% endif %}
+
+<div class="grid" style="margin-bottom:16px">
+  <section class="card">
+    <h2>Adicionar por URL</h2>
+    <form method="post" action="/products/inspect">
+      <label for="url">Link do produto na loja</label>
+      <div class="row">
+        <input id="url" type="url" name="url" placeholder="https://loja.com.br/produto" required>
+        <button type="submit">Analisar</button>
+      </div>
+      <p class="muted">Lemos o nome e o preço da página para você só confirmar o preço alvo.</p>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Buscar em várias lojas</h2>
+    {% if search_enabled %}
+    <form method="post" action="/search">
+      <label for="q">Produto</label>
+      <div class="row">
+        <input id="q" type="search" name="q" placeholder="Ex.: geladeira frost free 400 litros" required>
+        <button type="submit">Buscar</button>
+      </div>
+      {% if ai_enabled %}
+      <label class="check"><input type="checkbox" name="ai_filter" value="1"> Filtrar com IA (mantém só o mesmo modelo)</label>
+      {% endif %}
+    </form>
+    {% else %}
+    <p class="muted">Busca desativada. Defina <code>SERPER_API_KEY</code> para ativar.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="card">
+  <h2>Produtos monitorados ({{ products|length }})</h2>
+  {% if products %}
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>Produto</th><th class="num">Atual</th><th class="num">Alvo</th><th>Checado</th><th>Ações</th></tr>
+    </thead>
+    <tbody>
+    {% for p in products %}
+      <tr class="{{ '' if p.active else 'inactive' }}">
+        <td>
+          {% if p.url.startswith(('http://', 'https://')) %}
+          <a href="{{ p.url }}" target="_blank" rel="noopener noreferrer">{{ p.name }}</a>
+          {% else %}{{ p.name }}{% endif %}
+          <div class="muted">{{ p.host }}{% if not p.active %} · <span class="badge">inativo</span>{% endif %}</div>
+        </td>
+        <td class="num">
+          {% if p.last_price is not none %}
+            {{ p.last_price|brl }}
+            {% if p.below_target %}<div><span class="badge ok">no alvo</span></div>{% endif %}
+          {% else %}<span class="muted">sem leitura</span>{% endif %}
+        </td>
+        <td class="num">
+          <form class="inline target-form" method="post" action="/products/{{ p.id }}/target">
+            <input type="text" name="target_price" value="{{ p.target_input }}" inputmode="decimal" aria-label="Preço alvo de {{ p.name }}">
+            <button class="small secondary" type="submit">Salvar</button>
+          </form>
+        </td>
+        <td class="muted">{{ p.checked_at|localtime }}</td>
+        <td>
+          <div class="actions">
+            <form class="inline" method="post" action="/products/{{ p.id }}/toggle">
+              <button class="small secondary" type="submit">{{ 'Pausar' if p.active else 'Ativar' }}</button>
+            </form>
+            <form class="inline" method="post" action="/products/{{ p.id }}/delete" onsubmit="return confirm('Remover este produto?')">
+              <button class="small danger" type="submit">Remover</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="empty">Nenhum produto ainda. Use um dos formulários acima.</p>
+  {% endif %}
+</section>
+{% endblock %}

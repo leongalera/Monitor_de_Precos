@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="sub">Resultados para <strong>{{ q }}</strong>. Marque as ofertas que deseja monitorar.</p>
+
+{% if note %}<div class="warn">{{ note }}</div>{% endif %}
+
+<section class="card">
+  {% if offers %}
+  <form method="post" action="/search/add">
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th></th><th>Oferta</th><th>Loja</th><th class="num">Preço</th></tr></thead>
+      <tbody>
+      {% for o in offers %}
+        <tr>
+          <td>
+            <input type="checkbox" name="sel" value="{{ loop.index0 }}" aria-label="Monitorar {{ o.title }}">
+            <input type="hidden" name="titles" value="{{ o.title }}">
+            <input type="hidden" name="links" value="{{ o.link }}">
+            <input type="hidden" name="stores" value="{{ o.store }}">
+          </td>
+          <td>
+            {% if o.link.startswith(('http://', 'https://')) %}
+            <a href="{{ o.link }}" target="_blank" rel="noopener noreferrer">{{ o.title }}</a>
+            {% else %}{{ o.title }}{% endif %}
+            {% if not o.direct %}<div class="muted">Link do Google Shopping: o preço pode não ser legível.</div>{% endif %}
+          </td>
+          <td>{{ o.store }}</td>
+          <td class="num">{% if o.price is not none %}{{ o.price|brl }}{% else %}-{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+
+    <label for="target_price">Preço alvo para os selecionados (R$)</label>
+    <input id="target_price" type="text" name="target_price" value="{{ suggested }}" inputmode="decimal" required style="max-width:220px">
+    {% if suggested %}<p class="muted">Sugestão: 5% abaixo da oferta mais barata.</p>{% endif %}
+
+    <div class="row" style="margin-top:16px">
+      <button type="submit">Monitorar selecionados</button>
+      <a class="btn secondary" href="/">Voltar</a>
+    </div>
+  </form>
+  {% else %}
+  <p class="empty">Nenhuma oferta encontrada.</p>
+  <a class="btn secondary" href="/">Voltar</a>
+  {% endif %}
+</section>
+{% endblock %}

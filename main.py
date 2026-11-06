@@ -1,25 +1,21 @@
 import logging
+import sys
 
-from app.config import CHECK_INTERVAL_HOURS, LOG_LEVEL
-from app.db import init_db
-from app.scheduler import build_scheduler
+import uvicorn
+
+from app.config import LOG_LEVEL, PORT
+from app.web import app
 
 logging.basicConfig(
+    stream=sys.stdout,
     level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("monitor")
 
 
 def main() -> None:
-    init_db()
-    scheduler = build_scheduler()
-    logger.info("Monitor de preços iniciado. Verificações a cada %s hora(s).", CHECK_INTERVAL_HOURS)
-
-    try:
-        scheduler.start()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Monitor de preços encerrado.")
+    # log_config=None: o uvicorn usa o logging acima (stdout) em vez de stderr.
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_config=None)
 
 
 if __name__ == "__main__":

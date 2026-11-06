@@ -1,7 +1,11 @@
+import ipaddress
+import json
 import logging
 import random
 import re
-from typing import Optional
+import socket
+from typing import Any, Iterator, Optional
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -18,7 +22,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
 ]
 
-# Seletores usados quando o produto não define um price_selector específico.
+# Usados quando o produto não tem seletor próprio nem JSON-LD com preço.
 FALLBACK_SELECTORS = [
     "meta[itemprop='price']",
     "[itemprop='price']",
@@ -30,6 +34,8 @@ FALLBACK_SELECTORS = [
 ]
 
 PRICE_NUMBER_PATTERN = re.compile(r"\d[\d.,]*")
+MAX_REDIRECTS = 5
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 def _random_headers() -> dict:
@@ -42,14 +48,79 @@ def _random_headers() -> dict:
     }
 
 
-def fetch_html(url: str) -> Optional[str]:
+def is_safe_url(url: str) -> bool:
+    """Aceita só http(s) cujo host resolve exclusivamente para IPs públicos (evita SSRF)."""
     try:
-        response = requests.get(url, headers=_random_headers(), timeout=REQUEST_TIMEOUT_SECONDS)
-        response.raise_for_status()
-        return response.text
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        return False
+
+    if parts.scheme not in ("http", "https") or not host:
+        return False
+
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        return False
+
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0].split("%")[0])
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if not ip.is_global:
+            return False
+    return bool(infos)
+
+
+def _decode(raw: bytes, response: requests.Response) -> str:
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(response.encoding or "latin-1", errors="replace")
+
+
+def fetch_html(url: str) -> Optional[str]:
+    session = requests.Session()
+    headers = _random_headers()
+    current = url
+
+    try:
+        for _ in range(MAX_REDIRECTS + 1):
+            if not is_safe_url(current):
+                logger.error("URL bloqueada ou inválida: %s", current)
+                return None
+
+            response = session.get(
+                current,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                allow_redirects=False,
+                stream=True,
+            )
+            try:
+                if response.is_redirect:
+                    current = urljoin(current, response.headers["Location"])
+                    continue
+
+                response.raise_for_status()
+                chunks, size = [], 0
+                for chunk in response.iter_content(65536):
+                    size += len(chunk)
+                    if size > MAX_RESPONSE_BYTES:
+                        break
+                    chunks.append(chunk)
+                return _decode(b"".join(chunks), response)
+            finally:
+                response.close()
+
+        logger.error("Redirecionamentos demais em %s", url)
     except requests.RequestException as exc:
         logger.error("Falha ao buscar %s: %s", url, exc)
-        return None
+    finally:
+        session.close()
+    return None
 
 
 def fetch_html_with_playwright(url: str) -> Optional[str]:
@@ -58,6 +129,10 @@ def fetch_html_with_playwright(url: str) -> Optional[str]:
     Ativado por produto (render_js=True). Requer, fora do requirements.txt base:
     `pip install playwright && playwright install --with-deps chromium`.
     """
+    if not is_safe_url(url):
+        logger.error("URL bloqueada ou inválida: %s", url)
+        return None
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -104,26 +179,143 @@ def clean_price_string(raw_price: str) -> Optional[float]:
 
 def format_price_brl(value: float) -> str:
     """Converte 3499.0 em 'R$ 3.499,00'."""
-    formatted = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"R$ {formatted}"
+    return f"R$ {format_number_br(value)}"
 
 
-def extract_price(html: str, selector: Optional[str] = None) -> Optional[float]:
-    soup = BeautifulSoup(html, "lxml")
+def format_number_br(value: float) -> str:
+    """Converte 3499.0 em '3.499,00'."""
+    return f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-    selectors = ([selector] if selector else []) + FALLBACK_SELECTORS
 
-    for css_selector in selectors:
-        element = soup.select_one(css_selector)
-        if element is None:
-            continue
+def _to_price(value: Any) -> Optional[float]:
+    """Preço vindo de JSON-LD: números e strings com ponto decimal (schema.org)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    if isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError:
+            return clean_price_string(value)
+        return number if number > 0 else None
+    return None
 
-        raw_value = element.get("content") or element.get_text(strip=True)
-        price = clean_price_string(raw_value)
+
+def _json_ld_nodes(data: Any) -> Iterator[dict]:
+    if isinstance(data, list):
+        for item in data:
+            yield from _json_ld_nodes(item)
+    elif isinstance(data, dict):
+        yield data
+        yield from _json_ld_nodes(data.get("@graph"))
+
+
+def _is_product(node: dict) -> bool:
+    node_type = node.get("@type")
+    types = node_type if isinstance(node_type, list) else [node_type]
+    return "Product" in types
+
+
+def _offers_price(offers: Any) -> Optional[float]:
+    if isinstance(offers, list):
+        prices = [p for p in (_offers_price(o) for o in offers) if p is not None]
+        return min(prices) if prices else None
+    if not isinstance(offers, dict):
+        return None
+
+    for key in ("price", "lowPrice"):
+        price = _to_price(offers.get(key))
         if price is not None:
             return price
 
+    spec = offers.get("priceSpecification")
+    if isinstance(spec, (dict, list)):
+        for item in spec if isinstance(spec, list) else [spec]:
+            price = _to_price(item.get("price")) if isinstance(item, dict) else None
+            if price is not None:
+                return price
     return None
+
+
+def _json_ld_products(soup: BeautifulSoup) -> Iterator[dict]:
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(script.string or script.get_text() or "")
+        except ValueError:
+            continue
+        for node in _json_ld_nodes(data):
+            if _is_product(node):
+                yield node
+
+
+def _price_from_json_ld(soup: BeautifulSoup) -> Optional[float]:
+    for product in _json_ld_products(soup):
+        price = _offers_price(product.get("offers"))
+        if price is not None:
+            return price
+    return None
+
+
+def extract_page_name(html: str) -> Optional[str]:
+    soup = BeautifulSoup(html, "lxml")
+
+    for product in _json_ld_products(soup):
+        name = product.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+
+    og_title = soup.find("meta", property="og:title")
+    if og_title and og_title.get("content", "").strip():
+        return og_title["content"].strip()
+
+    if soup.title and soup.title.get_text(strip=True):
+        return soup.title.get_text(strip=True)
+    return None
+
+
+def price_from_selector(soup: BeautifulSoup, css_selector: str) -> Optional[float]:
+    try:
+        element = soup.select_one(css_selector)
+    except Exception as exc:
+        logger.warning("Seletor CSS inválido %r: %s", css_selector, exc)
+        return None
+    if element is None:
+        return None
+    return clean_price_string(element.get("content") or element.get_text(strip=True))
+
+
+def extract_price_with_source(html: str, selector: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
+    """Ordem: seletor do produto, JSON-LD (schema.org), seletores genéricos."""
+    soup = BeautifulSoup(html, "lxml")
+
+    if selector:
+        price = price_from_selector(soup, selector)
+        if price is not None:
+            return price, "seletor"
+
+    price = _price_from_json_ld(soup)
+    if price is not None:
+        return price, "json-ld"
+
+    for css_selector in FALLBACK_SELECTORS:
+        price = price_from_selector(soup, css_selector)
+        if price is not None:
+            return price, "css"
+
+    return None, None
+
+
+def extract_price(html: str, selector: Optional[str] = None) -> Optional[float]:
+    return extract_price_with_source(html, selector)[0]
+
+
+def is_valid_selector(selector: str) -> bool:
+    try:
+        BeautifulSoup("", "lxml").select_one(selector)
+    except Exception:
+        return False
+    return True
 
 
 def get_product_price(url: str, selector: Optional[str] = None, render_js: bool = False) -> Optional[float]:
