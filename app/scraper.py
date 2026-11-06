@@ -81,7 +81,8 @@ def _decode(raw: bytes, response: requests.Response) -> str:
         return raw.decode(response.encoding or "latin-1", errors="replace")
 
 
-def fetch_html(url: str) -> Optional[str]:
+def fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
+    """Devolve (html, None) ou (None, motivo curto da falha)."""
     session = requests.Session()
     headers = _random_headers()
     current = url
@@ -90,7 +91,7 @@ def fetch_html(url: str) -> Optional[str]:
         for _ in range(MAX_REDIRECTS + 1):
             if not is_safe_url(current):
                 logger.error("URL bloqueada ou inválida: %s", current)
-                return None
+                return None, "URL não permitida"
 
             response = session.get(
                 current,
@@ -111,16 +112,31 @@ def fetch_html(url: str) -> Optional[str]:
                     if size > MAX_RESPONSE_BYTES:
                         break
                     chunks.append(chunk)
-                return _decode(b"".join(chunks), response)
+                return _decode(b"".join(chunks), response), None
             finally:
                 response.close()
 
         logger.error("Redirecionamentos demais em %s", url)
+        return None, "redirecionamentos demais"
+    except requests.HTTPError as exc:
+        logger.error("Falha ao buscar %s: %s", url, exc)
+        status = exc.response.status_code if exc.response is not None else "?"
+        return None, f"HTTP {status}"
+    except requests.Timeout:
+        logger.error("Tempo esgotado ao buscar %s", url)
+        return None, "tempo esgotado"
+    except requests.ConnectionError:
+        logger.error("Falha de conexão ao buscar %s", url)
+        return None, "falha de conexão"
     except requests.RequestException as exc:
         logger.error("Falha ao buscar %s: %s", url, exc)
+        return None, "erro de rede"
     finally:
         session.close()
-    return None
+
+
+def fetch_html(url: str) -> Optional[str]:
+    return fetch_page(url)[0]
 
 
 def fetch_html_with_playwright(url: str) -> Optional[str]:

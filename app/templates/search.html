@@ -46,4 +46,22 @@
   <a class="btn secondary" href="/">Voltar</a>
   {% endif %}
 </section>
+{% if skipped %}
+<section class="card">
+  <details>
+    <summary><strong>Lojas encontradas, mas descartadas ({{ skipped|length }})</strong></summary>
+    <p class="muted">Motivo pelo qual não conseguimos ler o preço de cada página. Lojas que recusam o acesso do servidor (HTTP 403, 503) também não podem ser monitoradas.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Loja</th><th>Motivo</th></tr></thead>
+      <tbody>
+      {% for s in skipped %}
+        <tr><td>{{ s.store }}</td><td class="muted">{{ s.reason }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </details>
+</section>
+{% endif %}
 {% endblock %}

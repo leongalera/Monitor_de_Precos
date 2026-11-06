@@ -1,7 +1,8 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -9,7 +10,7 @@ import requests
 
 from app.ai import ai_enabled, suggest_selector
 from app.config import SERPER_API_KEY
-from app.scraper import extract_page_name, extract_price_with_source, fetch_html
+from app.scraper import extract_page_name, extract_price_with_source, fetch_html, fetch_page
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,18 @@ class Offer:
     price: float
 
 
+@dataclass
+class SkippedPage:
+    store: str
+    reason: str
+
+
+@dataclass
+class SearchOutcome:
+    offers: list[Offer]
+    skipped: list[SkippedPage] = field(default_factory=list)
+
+
 def inspect_url(url: str) -> ProductInfo:
     """Lê a página e descobre nome, preço e (se preciso) um seletor CSS para o preço."""
     html = fetch_html(url)
@@ -70,19 +83,38 @@ def _store_name(link: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def _read_offer(title: str, link: str) -> Optional[Offer]:
+def _read_offer(title: str, link: str) -> tuple[Optional[Offer], Optional[str]]:
     """Só aceita páginas com preço em dados estruturados (JSON-LD): é o que dá para monitorar sem IA."""
-    html = fetch_html(link)
+    html, error = fetch_page(link)
     if html is None:
-        return None
+        if error and error.startswith("HTTP"):
+            return None, f"acesso recusado pela loja ({error})"
+        return None, error or "falha ao acessar"
+
     price, source = extract_price_with_source(html)
-    if price is None or source != "json-ld":
-        return None
-    return Offer(title=extract_page_name(html) or title, store=_store_name(link), link=link, price=price)
+    if price is None:
+        return None, "página lida, mas sem preço identificável"
+    if source != "json-ld":
+        return None, "preço só em seletor genérico (cadastre pelo link para a IA tentar)"
+    return Offer(title=extract_page_name(html) or title, store=_store_name(link), link=link, price=price), None
 
 
-def search_offers(query: str) -> list[Offer]:
-    """Busca páginas de lojas (Serper) e devolve só as que tiveram o preço lido, do menor para o maior."""
+def _log_outcome(query: str, organic_hosts: list[str], outcome: SearchOutcome) -> None:
+    reasons = Counter(skipped.reason for skipped in outcome.skipped)
+    logger.info(
+        "Busca %r: %d resultado(s) orgânico(s) [%s]; %d oferta(s) legível(is); descartes: %s",
+        query,
+        len(organic_hosts),
+        ", ".join(organic_hosts),
+        len(outcome.offers),
+        dict(reasons) or "nenhum",
+    )
+    for skipped in outcome.skipped:
+        logger.info("  descartada %s: %s", skipped.store, skipped.reason)
+
+
+def search_offers(query: str) -> SearchOutcome:
+    """Busca páginas de lojas (Serper) e devolve as ofertas com preço lido (menor primeiro) e os descartes."""
     if not SERPER_API_KEY:
         raise SearchError("Busca desativada: defina SERPER_API_KEY.")
 
@@ -99,33 +131,43 @@ def search_offers(query: str) -> list[Offer]:
         logger.error("Falha na busca de ofertas: %s", type(exc).__name__)
         raise SearchError("Falha ao consultar a API de busca.") from exc
 
-    pages, seen = [], set()
+    candidates, seen = [], set()
     for item in data.get("organic") or []:
         title, link = item.get("title"), item.get("link")
         host = urlsplit(link).hostname or "" if isinstance(link, str) else ""
         if not title or not link or link in seen or not link.startswith(("http://", "https://")) or "google." in host:
             continue
         seen.add(link)
-        pages.append((title, link))
-    pages = pages[:MAX_PAGES_TO_READ]
+        candidates.append((title, link))
 
+    pages, over_limit = candidates[:MAX_PAGES_TO_READ], candidates[MAX_PAGES_TO_READ:]
     offers = []
+    skipped = [SkippedPage(_store_name(link), f"não lida (limite de {MAX_PAGES_TO_READ} páginas)") for _, link in over_limit]
+
     pool = ThreadPoolExecutor(max_workers=READ_WORKERS)
     try:
-        futures = [pool.submit(_read_offer, title, link) for title, link in pages]
+        futures = {pool.submit(_read_offer, title, link): link for title, link in pages}
         try:
             for future in as_completed(futures, timeout=READ_DEADLINE_SECONDS):
                 try:
-                    offer = future.result()
+                    offer, reason = future.result()
                 except Exception:
                     logger.exception("Erro ao ler página de oferta")
+                    skipped.append(SkippedPage(_store_name(futures[future]), "erro interno ao ler a página"))
                     continue
                 if offer:
                     offers.append(offer)
+                else:
+                    skipped.append(SkippedPage(_store_name(futures[future]), reason or "descartada"))
         except FuturesTimeout:
             logger.warning("Tempo esgotado lendo ofertas; mostrando as já lidas.")
+            for future, link in futures.items():
+                if not future.done():
+                    skipped.append(SkippedPage(_store_name(link), "tempo esgotado"))
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
     offers.sort(key=lambda offer: offer.price)
-    return offers
+    outcome = SearchOutcome(offers=offers, skipped=skipped)
+    _log_outcome(query, [_store_name(link) for _, link in candidates], outcome)
+    return outcome
