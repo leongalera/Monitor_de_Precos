@@ -73,6 +73,17 @@ details.move > summary { list-style: none; cursor: pointer; padding: 5px 10px; f
 details.move > summary::-webkit-details-marker { display: none; }
 details.move[open] > form { position: absolute; z-index: 2; right: 0; margin-top: 4px; padding: 8px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,.12); }
 .card[id] { scroll-margin-top: 12px; }
+.health { border: 1px solid var(--line); border-left-width: 5px; border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; background: var(--card); }
+.health .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: var(--ok); }
+.health.ok { border-left-color: var(--ok); }
+.health.warn { border-left-color: #d9a400; background: var(--warn-bg); }
+.health.warn .dot { background: #d9a400; }
+.health.error { border-left-color: var(--danger); background: var(--err-bg); }
+.health.error .dot { background: var(--danger); }
+.health-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.health-issues { margin: 8px 0 0; padding-left: 20px; font-size: .9rem; }
+.health-issues li.error { color: var(--err); font-weight: 600; }
+.health-issues li.warn { color: var(--warn); }
 @media (max-width: 640px) {
   .hide-narrow { display: none; }
   th, td { padding: 8px 4px; }

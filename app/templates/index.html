@@ -21,6 +21,26 @@
 {% block content %}
 <p class="sub">Cada grupo é um produto; dentro dele ficam os links das lojas. Você recebe no Telegram quando alguma loja chega ao preço alvo.</p>
 
+<div class="health {{ health.level }}" role="status" aria-label="Saúde do monitor">
+  <div class="health-line">
+    <span class="dot" aria-hidden="true"></span>
+    <strong>{{ health.title }}</strong>
+    <span class="muted">
+      {% if health.running %}Verificando agora ({{ health.progress }})
+      {% elif health.last_finished %}Última verificação {{ health.last_finished|localtime }} ({{ health.last_duration }}, {{ health.last_total }} link(s))
+      {% else %}Aguardando a primeira verificação{% endif %}
+      {% if health.next_run %} · próxima {{ health.next_run|localtime }}{% endif %}
+      {% if health.links_active is not none %} · {{ health.links_failing }} de {{ health.links_active }} link(s) sem leitura{% endif %}
+      · {{ health.telegram }}
+    </span>
+  </div>
+  {% if health.issues %}
+  <ul class="health-issues">
+    {% for issue in health.issues %}<li class="{{ issue.level }}">{{ issue.message }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
 {% if msg %}<div class="flash {{ kind }}" role="status">{{ msg }}</div>{% endif %}
 
 <div class="grid" style="margin-bottom:16px">
