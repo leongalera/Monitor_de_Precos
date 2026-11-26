@@ -1,10 +1,16 @@
 import ipaddress
 import json
 import logging
+import os
 import random
 import re
+import signal
 import socket
+import subprocess
+import sys
 import threading
+import time
+from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import urljoin, urlsplit
 
@@ -40,6 +46,8 @@ SPACE_BEFORE_SEPARATOR = re.compile(r"\s+([,.])(?=\d)")
 SPLIT_CENTS = re.compile(r"^(R\$\s*\d{1,3}(?:\.\d{3})*)\s+(\d{2})$")
 MAX_REDIRECTS = 5
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# Prazo total de uma leitura (o timeout do requests vale por operação: um servidor lento poderia segurar a conexão por horas).
+FETCH_DEADLINE_SECONDS = 45
 
 
 def _random_headers() -> dict:
@@ -85,14 +93,34 @@ def _decode(raw: bytes, response: requests.Response) -> str:
         return raw.decode(response.encoding or "latin-1", errors="replace")
 
 
+def _abort_response(response) -> None:
+    """Derruba o socket para destravar uma leitura bloqueada (o requests só devolve dados a cada bloco cheio)."""
+    sockets = []
+    for path in (lambda: response.raw._connection.sock, lambda: response.raw._fp.fp.raw._sock):
+        try:
+            sockets.append(path())
+        except AttributeError:
+            pass
+    for sock in sockets:
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
 def fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
     """Devolve (html, None) ou (None, motivo curto da falha)."""
     session = requests.Session()
     headers = _random_headers()
     current = url
+    deadline = time.monotonic() + FETCH_DEADLINE_SECONDS
 
     try:
         for _ in range(MAX_REDIRECTS + 1):
+            if time.monotonic() > deadline:
+                logger.error("Prazo total excedido ao buscar %s", url)
+                return None, "tempo esgotado"
             if not is_safe_url(current):
                 logger.error("URL bloqueada ou inválida: %s", current)
                 return None, "URL não permitida"
@@ -104,6 +132,9 @@ def fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
                 allow_redirects=False,
                 stream=True,
             )
+            watchdog = threading.Timer(max(deadline - time.monotonic(), 0.1), _abort_response, args=(response,))
+            watchdog.daemon = True
+            watchdog.start()
             try:
                 if response.is_redirect:
                     current = urljoin(current, response.headers["Location"])
@@ -116,8 +147,12 @@ def fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
                     if size > MAX_RESPONSE_BYTES:
                         break
                     chunks.append(chunk)
+                if time.monotonic() > deadline:  # o watchdog derrubou a conexão: o corpo está truncado
+                    logger.error("Prazo total excedido baixando %s", url)
+                    return None, "tempo esgotado"
                 return _decode(b"".join(chunks), response), None
             finally:
+                watchdog.cancel()
                 response.close()
 
         logger.error("Redirecionamentos demais em %s", url)
@@ -130,9 +165,14 @@ def fetch_page(url: str) -> tuple[Optional[str], Optional[str]]:
         logger.error("Tempo esgotado ao buscar %s", url)
         return None, "tempo esgotado"
     except requests.ConnectionError:
+        if time.monotonic() > deadline:
+            return None, "tempo esgotado"
         logger.error("Falha de conexão ao buscar %s", url)
         return None, "falha de conexão"
     except requests.RequestException as exc:
+        if time.monotonic() > deadline:  # conexão derrubada pelo watchdog no meio de uma resposta em blocos
+            logger.error("Prazo total excedido baixando %s", url)
+            return None, "tempo esgotado"
         logger.error("Falha ao buscar %s: %s", url, exc)
         return None, "erro de rede"
     finally:
@@ -143,13 +183,12 @@ def fetch_html(url: str) -> Optional[str]:
     return fetch_page(url)[0]
 
 
-BROWSER_ARGS = ["--disable-dev-shm-usage"]
-BROWSER_BLOCKED_RESOURCES = {"image", "media", "font"}
-BROWSER_NAVIGATION_TIMEOUT_MS = 30000
-BROWSER_IDLE_TIMEOUT_MS = 10000
-BROWSER_SETTLE_MS = 1500
-# O Chromium consome centenas de MB: no máximo 2 renderizações ao mesmo tempo.
+# O Chromium consome centenas de MB e o driver do Playwright já caiu/travou em produção:
+# cada renderização roda num processo separado, com prazo total e encerramento forçado.
+BROWSER_TOTAL_TIMEOUT_SECONDS = 75
+BROWSER_ATTEMPTS = 2
 _browser_slots = threading.BoundedSemaphore(2)
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def browser_available() -> bool:
@@ -160,60 +199,68 @@ def browser_available() -> bool:
     return True
 
 
-def _route_request(route) -> None:
-    request = route.request
-    if request.resource_type in BROWSER_BLOCKED_RESOURCES:
-        route.abort()
-    elif request.url.startswith(("data:", "blob:")) or is_safe_url(request.url):
-        route.continue_()
-    else:
-        route.abort()
+def _worker_command(url: str) -> list[str]:
+    return [sys.executable, "-m", "app.browser", url]
+
+
+def _kill_process_group(process: subprocess.Popen) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _run_browser_worker(url: str) -> tuple[Optional[str], Optional[str], bool]:
+    """Roda o worker: (html, motivo, pode_tentar_de_novo). Nunca passa de BROWSER_TOTAL_TIMEOUT_SECONDS."""
+    process = subprocess.Popen(
+        _worker_command(url),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        start_new_session=True,
+        cwd=_PROJECT_ROOT,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=BROWSER_TOTAL_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        process.communicate()
+        logger.error("Navegador excedeu %ss em %s e foi encerrado", BROWSER_TOTAL_TIMEOUT_SECONDS, url)
+        return None, "tempo esgotado", False
+    finally:
+        _kill_process_group(process)  # sobras (Chromium) de um worker que já terminou ou caiu
+
+    if process.returncode != 0 or not stdout.strip():
+        logger.error("Processo do navegador falhou (código %s) em %s: %s", process.returncode, url, (stderr or "")[-1000:])
+        return None, "falha ao renderizar (navegador encerrou)", True
+
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        logger.error("Saída inválida do navegador em %s: %r", url, stdout[:200])
+        return None, "falha ao renderizar (resposta inválida)", True
+    return data.get("html"), data.get("error"), False
 
 
 def render_page(url: str) -> tuple[Optional[str], Optional[str]]:
-    """Abre a página num Chromium e devolve o HTML já montado pelo JavaScript: (html, None) ou (None, motivo).
+    """HTML da página já montado pelo JavaScript (Chromium): (html, None) ou (None, motivo).
 
-    Requer Playwright + Chromium instalados (ver Dockerfile). Toda requisição do navegador passa pela
-    checagem anti-SSRF, inclusive redirecionamentos e chamadas da própria página.
+    Requer Playwright + Chromium instalados (ver Dockerfile).
     """
     if not is_safe_url(url):
         return None, "URL não permitida"
     if not browser_available():
         return None, "navegador (Playwright) não instalado neste servidor"
 
-    from playwright.sync_api import TimeoutError as PlaywrightTimeout
-    from playwright.sync_api import sync_playwright
-
     with _browser_slots:
-        try:
-            with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(headless=True, args=BROWSER_ARGS)
-                try:
-                    context = browser.new_context(
-                        user_agent=random.choice(USER_AGENTS), locale="pt-BR", viewport={"width": 1366, "height": 900}
-                    )
-                    page = context.new_page()
-                    page.route("**/*", _route_request)
-
-                    response = page.goto(url, timeout=BROWSER_NAVIGATION_TIMEOUT_MS, wait_until="domcontentloaded")
-                    if response is not None and response.status >= 400:
-                        logger.error("Navegador recebeu HTTP %s em %s", response.status, url)
-                        return None, f"HTTP {response.status}"
-
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=BROWSER_IDLE_TIMEOUT_MS)
-                    except PlaywrightTimeout:
-                        pass  # sites com polling nunca ficam ociosos: usa o que já carregou
-                    page.wait_for_timeout(BROWSER_SETTLE_MS)
-                    return page.content(), None
-                finally:
-                    browser.close()
-        except PlaywrightTimeout:
-            logger.error("Tempo esgotado renderizando %s", url)
-            return None, "tempo esgotado"
-        except Exception as exc:
-            logger.error("Falha ao renderizar %s: %s", url, exc)
-            return None, f"falha ao renderizar ({type(exc).__name__})"
+        error = None
+        for _ in range(BROWSER_ATTEMPTS):
+            html, error, retryable = _run_browser_worker(url)
+            if not retryable:
+                return html, error
+        return None, error
 
 
 def clean_price_string(raw_price: str) -> Optional[float]:

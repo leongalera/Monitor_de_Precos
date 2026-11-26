@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
@@ -69,19 +71,47 @@ def check_product_by_id(product_id: int) -> None:
             session.rollback()
 
 
-def check_all_products() -> None:
-    session = SessionLocal()
+# Mesmo com prazos nas leituras, uma verificação não pode derrubar o job inteiro: se uma passar disso, o job segue.
+PRODUCT_CHECK_TIMEOUT_SECONDS = 300
+
+
+def _mark_error(product_id: int, message: str) -> None:
     try:
-        products = session.query(Product).filter(Product.active.is_(True)).all()
-        logger.info("Verificando %d produto(s) ativo(s)", len(products))
-        for product in products:
-            try:
-                check_product(session, product)
-            except Exception:
-                logger.exception("Erro ao verificar '%s'", product.name)
-                session.rollback()
-    finally:
-        session.close()
+        with SessionLocal() as session:
+            product = session.get(Product, product_id)
+            if product is not None:
+                product.last_error = message
+                product.last_checked_at = utcnow()
+                session.commit()
+    except Exception:
+        logger.exception("Não foi possível registrar o erro do produto %s", product_id)
+
+
+def check_all_products() -> None:
+    started = time.monotonic()
+    with SessionLocal() as session:
+        product_ids = [pid for (pid,) in session.query(Product.id).filter(Product.active.is_(True)).order_by(Product.id)]
+    logger.info("Verificando %d produto(s) ativo(s)", len(product_ids))
+
+    for product_id in product_ids:
+        product_started = time.monotonic()
+        worker = threading.Thread(target=check_product_by_id, args=(product_id,), daemon=True)
+        worker.start()
+        worker.join(PRODUCT_CHECK_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            logger.error(
+                "Verificação do produto id=%s travada por mais de %ss; seguindo para o próximo.",
+                product_id,
+                PRODUCT_CHECK_TIMEOUT_SECONDS,
+            )
+            _mark_error(product_id, "tempo esgotado (a verificação travou)")
+            continue
+
+        elapsed = time.monotonic() - product_started
+        if elapsed > 30:
+            logger.warning("Verificação lenta (%.0fs): produto id=%s", elapsed, product_id)
+
+    logger.info("Verificação concluída: %d produto(s) em %.0fs", len(product_ids), time.monotonic() - started)
 
 
 def build_scheduler() -> BackgroundScheduler:
