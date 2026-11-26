@@ -71,6 +71,10 @@ python manage.py list
 3. No serviço, em **Variables**, defina `DATABASE_URL` = `${{Postgres.DATABASE_URL}}` e as demais variáveis da tabela acima.
 4. Em **Settings → Networking → Generate Domain** para ter a URL pública da interface.
 
+## Robustez das verificações
+
+Toda leitura de página tem prazo total (45 s; o navegador, 75 s) e o Postgres tem timeouts de conexão e de consulta. Cada produto é verificado com limite de 5 min: se algum travar, o job registra o erro, marca o produto e segue para o próximo, em vez de bloquear todas as verificações seguintes. O log mostra "Verificação concluída: N produto(s) em Xs" a cada rodada.
+
 ## Segurança
 
 - A interface exige login (HTTP Basic); use uma senha longa, pois a URL é pública.
@@ -79,6 +83,6 @@ python manage.py list
 
 ## Páginas que carregam o preço por JavaScript
 
-Algumas lojas entregam a página "vazia" e montam o preço depois, com JavaScript. Quando o HTML simples não traz o preço, o cadastro por URL tenta de novo abrindo a página num Chromium (Playwright); se achar, o produto é marcado com o selo **navegador** e passa a ser lido assim em cada verificação (mais lento e com mais memória que a leitura simples). Toda requisição do navegador passa pela mesma proteção contra SSRF e imagens/fontes são bloqueadas.
+Algumas lojas entregam a página "vazia" e montam o preço depois, com JavaScript. Quando o HTML simples não traz o preço, o cadastro por URL tenta de novo abrindo a página num Chromium (Playwright); se achar, o produto é marcado com o selo **navegador** e passa a ser lido assim em cada verificação (mais lento e com mais memória que a leitura simples). Cada renderização roda num processo separado, com prazo total e encerramento forçado (inclusive do Chromium): se o driver do Playwright travar ou cair, só aquela leitura falha, com o motivo na tela. Toda requisição do navegador passa pela mesma proteção contra SSRF e imagens/fontes são bloqueadas.
 
 O Chromium vem do `Dockerfile` (imagem oficial do Playwright), que o Railway usa automaticamente. A versão da imagem e a de `playwright==` em `requirements.txt` precisam ser a mesma. Localmente, sem Chromium, a leitura com navegador é pulada e o motivo aparece na tela; para ativar: `playwright install --with-deps chromium`.

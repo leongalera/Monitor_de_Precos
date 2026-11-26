@@ -58,7 +58,21 @@ def _normalized_database_url() -> str:
     return DATABASE_URL
 
 
-engine = create_engine(_normalized_database_url(), pool_pre_ping=True)
+def _connect_args(url: str) -> dict:
+    # Sem isso, uma conexão que o Postgres derrubou em silêncio pode bloquear uma consulta para sempre.
+    if url.startswith("postgresql"):
+        return {
+            "connect_timeout": 10,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+            "options": "-c statement_timeout=60000",
+        }
+    return {}
+
+
+engine = create_engine(_normalized_database_url(), pool_pre_ping=True, connect_args=_connect_args(_normalized_database_url()))
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
