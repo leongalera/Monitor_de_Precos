@@ -21,3 +21,8 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 AI_MODEL = os.getenv("AI_MODEL", "claude-haiku-5-5")
+
+# Saúde do monitor: avisos no Telegram quando a verificação trava, atrasa ou o banco cai
+HEALTH_STUCK_MINUTES = float(os.getenv("HEALTH_STUCK_MINUTES", "30"))
+HEALTH_ALERT_REPEAT_HOURS = float(os.getenv("HEALTH_ALERT_REPEAT_HOURS", "6"))
+HEALTH_WATCHDOG_MINUTES = float(os.getenv("HEALTH_WATCHDOG_MINUTES", "10"))

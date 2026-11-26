@@ -12,6 +12,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import selectinload
 
+from app import health
 from app.ai import ai_enabled, filter_matching_offers
 from app.config import ADMIN_PASSWORD, ADMIN_USER, SERPER_API_KEY
 from app.db import Product, ProductGroup, SessionLocal, init_db
@@ -163,6 +164,7 @@ def index(request: Request, msg: str = "", kind: str = "ok"):
             "groups": group_views,
             "ungrouped": ungrouped_views,
             "group_options": options,
+            "health": health.view(health.collect_db_facts()),
             "msg": msg,
             "kind": "err" if kind == "err" else "ok",
             "search_enabled": bool(SERPER_API_KEY),
@@ -496,5 +498,5 @@ async def security_headers(request: Request, call_next):
 
 
 @app.get("/health", response_class=PlainTextResponse)
-def health() -> str:
+def healthcheck() -> str:
     return "ok"

@@ -75,6 +75,12 @@ python manage.py list
 
 Toda leitura de página tem prazo total (45 s; o navegador, 75 s) e o Postgres tem timeouts de conexão e de consulta. Cada produto é verificado com limite de 5 min: se algum travar, o job registra o erro, marca o produto e segue para o próximo, em vez de bloquear todas as verificações seguintes. O log mostra "Verificação concluída: N produto(s) em Xs" a cada rodada.
 
+## Saúde do monitor
+
+No topo da página há uma faixa com o estado do monitor: última verificação (horário, duração, quantos links), a próxima, quantos links estão sem leitura e se o Telegram está configurado e funcionando. Fica verde (tudo certo), amarela (atenção, ex.: Telegram falhou ou a maioria dos links sem leitura) ou vermelha (problema: rodada travada, nenhuma verificação concluída há mais de 1,5 intervalo, banco inacessível).
+
+Um vigia roda a cada 10 min e, em caso de problema grave, **avisa no Telegram** (repete a cada 6 h enquanto durar) e avisa de novo quando o monitor se recupera. Se o processo inteiro cair, quem avisa é o Railway (notificações de deploy/crash), pois o vigia roda dentro do mesmo processo. Limites ajustáveis: `HEALTH_STUCK_MINUTES` (30), `HEALTH_ALERT_REPEAT_HOURS` (6), `HEALTH_WATCHDOG_MINUTES` (10).
+
 ## Segurança
 
 - A interface exige login (HTTP Basic); use uma senha longa, pois a URL é pública.

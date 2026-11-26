@@ -3,6 +3,7 @@ import logging
 
 import requests
 
+from app import health
 from app.config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 from app.scraper import format_price_brl
 
@@ -25,10 +26,12 @@ def send_telegram_message(text: str) -> bool:
     try:
         response = requests.post(TELEGRAM_API_URL.format(token=TELEGRAM_TOKEN), json=payload, timeout=10)
         response.raise_for_status()
+        health.record_telegram(True)
         return True
     except requests.RequestException as exc:
         # Não loga a exceção completa: a URL da requisição contém o token do bot.
         logger.error("Falha ao enviar mensagem no Telegram: %s", type(exc).__name__)
+        health.record_telegram(False, type(exc).__name__)
         return False
 
 

@@ -6,7 +6,8 @@ from urllib.parse import urlsplit
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.config import ALERT_COOLDOWN_HOURS, CHECK_INTERVAL_HOURS
+from app import health
+from app.config import ALERT_COOLDOWN_HOURS, CHECK_INTERVAL_HOURS, HEALTH_WATCHDOG_MINUTES
 from app.db import Product, SessionLocal, utcnow
 from app.notifier import build_price_drop_message, send_telegram_message
 from app.scraper import format_price_brl, read_product_price
@@ -92,26 +93,33 @@ def check_all_products() -> None:
     with SessionLocal() as session:
         product_ids = [pid for (pid,) in session.query(Product.id).filter(Product.active.is_(True)).order_by(Product.id)]
     logger.info("Verificando %d produto(s) ativo(s)", len(product_ids))
+    health.run_started(len(product_ids))
 
-    for product_id in product_ids:
-        product_started = time.monotonic()
-        worker = threading.Thread(target=check_product_by_id, args=(product_id,), daemon=True)
-        worker.start()
-        worker.join(PRODUCT_CHECK_TIMEOUT_SECONDS)
-        if worker.is_alive():
-            logger.error(
-                "Verificação do produto id=%s travada por mais de %ss; seguindo para o próximo.",
-                product_id,
-                PRODUCT_CHECK_TIMEOUT_SECONDS,
-            )
-            _mark_error(product_id, "tempo esgotado (a verificação travou)")
-            continue
+    try:
+        for product_id in product_ids:
+            product_started = time.monotonic()
+            try:
+                worker = threading.Thread(target=check_product_by_id, args=(product_id,), daemon=True)
+                worker.start()
+                worker.join(PRODUCT_CHECK_TIMEOUT_SECONDS)
+                if worker.is_alive():
+                    logger.error(
+                        "Verificação do produto id=%s travada por mais de %ss; seguindo para o próximo.",
+                        product_id,
+                        PRODUCT_CHECK_TIMEOUT_SECONDS,
+                    )
+                    _mark_error(product_id, "tempo esgotado (a verificação travou)")
+                    continue
 
-        elapsed = time.monotonic() - product_started
-        if elapsed > 30:
-            logger.warning("Verificação lenta (%.0fs): produto id=%s", elapsed, product_id)
-
-    logger.info("Verificação concluída: %d produto(s) em %.0fs", len(product_ids), time.monotonic() - started)
+                elapsed = time.monotonic() - product_started
+                if elapsed > 30:
+                    logger.warning("Verificação lenta (%.0fs): produto id=%s", elapsed, product_id)
+            finally:
+                health.product_done()
+    finally:
+        elapsed_total = time.monotonic() - started
+        health.run_finished(elapsed_total)
+        logger.info("Verificação concluída: %d produto(s) em %.0fs", len(product_ids), elapsed_total)
 
 
 def build_scheduler() -> BackgroundScheduler:
@@ -125,4 +133,13 @@ def build_scheduler() -> BackgroundScheduler:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        health.check_and_alert,
+        "interval",
+        minutes=HEALTH_WATCHDOG_MINUTES,
+        id="health_watchdog",
+        max_instances=1,
+        coalesce=True,
+    )
+    health.set_scheduler(scheduler)
     return scheduler
